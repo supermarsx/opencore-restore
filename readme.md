@@ -1,5 +1,15 @@
 # OpenCore Restoration Kit
 
+<!-- Badges: CI | Stars | Forks | Watchers | Repo Size | License | Built With -->
+[![CI](https://github.com/supermarsx/opencore-restore/actions/workflows/ci.yml/badge.svg)](https://github.com/supermarsx/opencore-restore/actions/workflows/ci.yml)
+[![GitHub stars](https://img.shields.io/github/stars/supermarsx/opencore-restore?style=flat-square)](https://github.com/supermarsx/opencore-restore/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/supermarsx/opencore-restore?style=flat-square)](https://github.com/supermarsx/opencore-restore/network/members)
+[![Watchers](https://img.shields.io/github/watchers/supermarsx/opencore-restore?style=flat-square)](https://github.com/supermarsx/opencore-restore/watchers)
+[![Repo size](https://img.shields.io/github/repo-size/supermarsx/opencore-restore?style=flat-square)](https://github.com/supermarsx/opencore-restore)
+[![License](https://img.shields.io/github/license/supermarsx/opencore-restore?style=flat-square)](LICENSE.md)
+[![Built with](https://img.shields.io/badge/built%20with-ShellScript-blue?style=flat-square)](https://github.com/acidanthera/OpenCorePkg)
+
+
 ## 🚨 Emergency Boot Rescue
 
 **Did you accidentally update macOS and lose access to your system?**
@@ -25,7 +35,34 @@ Select the method that best fits your situation:
 
 **Requirements:** Another computer (Windows/Mac/Linux) and a USB drive.
 
-1.  **Prepare USB:** Format a USB drive as **FAT32**.
+### Automated Creation
+
+We provide automated scripts for all major operating systems to easily create the rescue USB.
+
+#### 🍎 macOS
+1.  Open Terminal.
+2.  Run:
+    ```bash
+    ./create_usb.sh
+    ```
+3.  Follow the on-screen prompts.
+
+#### 🪟 Windows
+1.  Right-click `create_usb.ps1` and select **"Run with PowerShell"**.
+2.  Follow the prompts to select your USB drive.
+    *   *Note: Requires Administrator privileges.*
+
+#### 🐧 Linux
+1.  Open Terminal.
+2.  Run with sudo:
+    ```bash
+    sudo ./create_usb_linux.sh
+    ```
+3.  Follow the prompts.
+
+### Manual Method
+If you prefer to do it manually:
+1.  **Prepare USB:** Format a USB drive as **FAT32** (Scheme: GUID Partition Map / GPT).
 2.  **Copy Files:** Copy the **`EFI`** folder from the `BOOTEFIX64` folder in this repository to the **root** of the USB drive.
 3.  **Boot:**
     *   Insert USB into the broken Mac.
