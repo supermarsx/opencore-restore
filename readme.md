@@ -1,4 +1,4 @@
-# OpenCore Bootloade Restoration Kit
+# OpenCore Bootloader Restoration Kit
 
 <!-- Badges: CI | Stars | Forks | Watchers | Repo Size | License | Built With -->
 [![CI](https://github.com/supermarsx/opencore-restore/actions/workflows/ci.yml/badge.svg)](https://github.com/supermarsx/opencore-restore/actions/workflows/ci.yml)
