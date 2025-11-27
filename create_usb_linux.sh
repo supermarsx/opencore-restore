@@ -103,11 +103,17 @@ done
 # Partitioning
 log_info "Creating GPT partition table on $TARGET_DISK..."
 parted -s "$TARGET_DISK" mklabel gpt
-if [ $? -ne 0 ]; then log_error "Failed to create partition table."; exit 1; fi
+if [ $? -ne 0 ]; then
+    log_error "Failed to create partition table."
+    exit 1
+fi
 
 log_info "Creating FAT32 partition..."
 parted -s "$TARGET_DISK" mkpart primary fat32 1MiB 100%
-if [ $? -ne 0 ]; then log_error "Failed to create partition."; exit 1; fi
+if [ $? -ne 0 ]; then
+    log_error "Failed to create partition."
+    exit 1
+fi
 
 log_info "Setting ESP flag..."
 parted -s "$TARGET_DISK" set 1 esp on
@@ -132,7 +138,10 @@ fi
 # Format
 log_info "Formatting $PARTITION as FAT32..."
 mkfs.vfat -F 32 -n "$USB_LABEL" "$PARTITION"
-if [ $? -ne 0 ]; then log_error "Failed to format partition."; exit 1; fi
+if [ $? -ne 0 ]; then
+    log_error "Failed to format partition."
+    exit 1
+fi
 
 # Mount
 MOUNT_POINT="/mnt/opencore_usb_$(date +%s)"
@@ -140,7 +149,10 @@ mkdir -p "$MOUNT_POINT"
 
 log_info "Mounting $PARTITION to $MOUNT_POINT..."
 mount "$PARTITION" "$MOUNT_POINT"
-if [ $? -ne 0 ]; then log_error "Failed to mount partition."; exit 1; fi
+if [ $? -ne 0 ]; then
+    log_error "Failed to mount partition."
+    exit 1
+fi
 
 # Copy
 log_info "Copying EFI folder..."

@@ -113,11 +113,11 @@ else
         printf "  [%d] ${YELLOW}%s${NC} (%s)\n" "$i" "$disk" "$NODE_INFO"
         i=$((i + 1))
     done
-    
+
     printf "\n"
     printf "Select partition number [0-$((COUNT - 1))]: "
     read -r SELECTION
-    
+
     # Validate selection is a number
     case "$SELECTION" in
         '' | *[!0-9]*)
@@ -125,12 +125,12 @@ else
             exit 1
             ;;
     esac
-    
+
     if [ "$SELECTION" -ge "$COUNT" ]; then
         log_error "Invalid selection."
         exit 1
     fi
-    
+
     # Retrieve selection by iterating through the parameters
     i=0
     for disk in "$@"; do
