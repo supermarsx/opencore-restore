@@ -16,7 +16,6 @@
 
 This repository provides a "Rescue Kit" to help you boot back into macOS when your OpenCore installation has been overwritten, bypassed, or corrupted during a system update.
 
----
 
 ## ⚡ Choose Your Recovery Method
 
@@ -29,7 +28,6 @@ Select the method that best fits your situation:
 | **[3. Internet Recovery (Official)](#3-internet-recovery-no-usb-with-internet)** | Internet connection in Recovery | ⭐⭐⭐ Hard | Downloads generic OpenCore. |
 | **[4. Internet Rescue Kit (Repo)](#4-internet-recovery-using-this-rescue-kit)** | Internet connection in Recovery | ⭐⭐ Medium | Downloads this specific rescue kit. |
 
----
 
 ## 1. Rescue USB Method (Recommended)
 
@@ -71,7 +69,6 @@ If you prefer to do it manually:
     *   Select your macOS disk to boot.
 4.  **Fix:** Once in macOS, run OpenCore Patcher and "Install to Disk" to fix the internal drive.
 
----
 
 ## 2. Local Recovery (No USB, No Internet)
 
@@ -113,7 +110,6 @@ If you prefer to do it manually:
     shutdown -h now
     ```
 
----
 
 ## 3. Internet Recovery (No USB, With Internet)
 
@@ -145,7 +141,6 @@ If you prefer to do it manually:
     ```
     *Perform a cold boot (shutdown then power on).*
 
----
 
 ## 4. Internet Recovery (Using this Rescue Kit)
 
@@ -172,7 +167,6 @@ If you prefer to do it manually:
     ```
     *Follow the on-screen prompts.*
 
----
 
 ## 📚 Detailed Manual Guide
 
