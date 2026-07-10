@@ -1,245 +1,332 @@
 #!/bin/sh
 
-# ==============================================================================
-# OpenCore Bootloader Restoration Script
-# ==============================================================================
-#
-# Description:
-#   Automated EFI bootloader restoration tool designed for macOS Recovery.
-#   This script detects EFI partitions, backs up existing configurations,
-#   and restores the OpenCore bootloader from the repository.
-#
-# Usage:
-#   ./restore.sh
-#
-# Requirements:
-#   - macOS Recovery environment (or macOS with SIP disabled/appropriate permissions)
-#   - 'diskutil' command available
-#   - 'nvram' command available
-#   - Repository structure with BOOTEFIX64/EFI present
-#
-# Author: supermarsx
-# Repository: https://github.com/supermarsx/opencore-restore
-# License: MIT
-#
-# ==============================================================================
+# Safely restore a complete OpenCore EFI from macOS or macOS Recovery.
 
-# --- Configuration ---
-# Path to the source EFI folder within the repository
-REPO_EFI_PATH="./BOOTEFIX64/EFI"
+set -u
 
-# Directory where backups of the existing EFI will be stored
-# Uses a timestamp to ensure uniqueness
-BACKUP_DIR="/Volumes/EFI_BACKUP_$(date +%Y%m%d_%H%M%S)"
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+BUNDLED_EFI="$SCRIPT_DIR/BOOTEFIX64/EFI"
+TARGET_PARTITION=""
+EFI_MOUNT_POINT=""
+MOUNTED_BY_SCRIPT=0
+STAGE_DIR=""
+OLD_BOOT=""
+OLD_OC=""
+OLD_BOOT_MOVED=0
+OLD_OC_MOVED=0
+NEW_BOOT_MOVED=0
+NEW_OC_MOVED=0
+INSTALL_COMMITTED=0
+ROLLBACK_FAILED=0
 
-# --- Colors & Formatting ---
-# ANSI escape codes for colored output.
-# Note: In some sh environments \033 might not work with echo, using printf is safer.
 RED=$(printf '\033[0;31m')
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
 YELLOW=$(printf '\033[1;33m')
 CYAN=$(printf '\033[0;36m')
-NC=$(printf '\033[0m') # No Color
+NC=$(printf '\033[0m')
 
-# --- Logging Functions ---
-# Helper functions to print standardized status messages.
+log_info() { printf '%s[INFO]%s %s\n' "$BLUE" "$NC" "$1"; }
+log_success() { printf '%s[ OK ]%s %s\n' "$GREEN" "$NC" "$1"; }
+log_warn() { printf '%s[WARN]%s %s\n' "$YELLOW" "$NC" "$1"; }
+log_error() { printf '%s[FAIL]%s %s\n' "$RED" "$NC" "$1" >&2; }
 
-# log_info: Prints an informational message in blue.
-log_info() { printf "${BLUE}[INFO]${NC} %s\n" "$1"; }
-
-# log_success: Prints a success message in green.
-log_success() { printf "${GREEN}[ OK ]${NC} %s\n" "$1"; }
-
-# log_warn: Prints a warning message in yellow.
-log_warn() { printf "${YELLOW}[WARN]${NC} %s\n" "$1"; }
-
-# log_error: Prints an error message in red.
-log_error() { printf "${RED}[FAIL]${NC} %s\n" "$1"; }
-
-# header: Clears the screen and prints the script banner.
-header() {
-    clear
-    printf "${CYAN}======================================================${NC}\n"
-    printf "${CYAN}       OpenCore Bootloader Restoration Assistant      ${NC}\n"
-    printf "${CYAN}======================================================${NC}\n"
-    printf "\n"
+die() {
+    log_error "$1"
+    exit 1
 }
 
-# --- Main Logic ---
+cleanup() {
+    status=$?
+    restore_boot=1
+    restore_oc=1
+    if [ "$INSTALL_COMMITTED" -eq 0 ]; then
+        if [ "$NEW_BOOT_MOVED" -eq 1 ] && ! rm -rf "$EFI_MOUNT_POINT/EFI/BOOT"; then
+            log_error "Could not remove the partial BOOT installation during rollback."
+            ROLLBACK_FAILED=1
+            restore_boot=0
+        fi
+        if [ "$NEW_OC_MOVED" -eq 1 ] && ! rm -rf "$EFI_MOUNT_POINT/EFI/OC"; then
+            log_error "Could not remove the partial OC installation during rollback."
+            ROLLBACK_FAILED=1
+            restore_oc=0
+        fi
+        if [ "$OLD_BOOT_MOVED" -eq 1 ] && [ -d "$OLD_BOOT" ] && [ "$restore_boot" -eq 1 ]; then
+            if [ -e "$EFI_MOUNT_POINT/EFI/BOOT" ]; then
+                log_error "Cannot restore the previous BOOT folder because the destination still exists."
+                ROLLBACK_FAILED=1
+                restore_boot=0
+            fi
+        fi
+        if [ "$OLD_BOOT_MOVED" -eq 1 ] && [ -d "$OLD_BOOT" ] && [ "$restore_boot" -eq 1 ]; then
+            if ! mv "$OLD_BOOT" "$EFI_MOUNT_POINT/EFI/BOOT"; then
+                log_error "Could not restore the previous BOOT folder from $OLD_BOOT."
+                ROLLBACK_FAILED=1
+            fi
+        fi
+        if [ "$OLD_OC_MOVED" -eq 1 ] && [ -d "$OLD_OC" ] && [ "$restore_oc" -eq 1 ]; then
+            if [ -e "$EFI_MOUNT_POINT/EFI/OC" ]; then
+                log_error "Cannot restore the previous OC folder because the destination still exists."
+                ROLLBACK_FAILED=1
+                restore_oc=0
+            fi
+        fi
+        if [ "$OLD_OC_MOVED" -eq 1 ] && [ -d "$OLD_OC" ] && [ "$restore_oc" -eq 1 ]; then
+            if ! mv "$OLD_OC" "$EFI_MOUNT_POINT/EFI/OC"; then
+                log_error "Could not restore the previous OC folder from $OLD_OC."
+                ROLLBACK_FAILED=1
+            fi
+        fi
+    fi
+    if [ -n "$STAGE_DIR" ] && [ -d "$STAGE_DIR" ]; then
+        rm -rf "$STAGE_DIR"
+    fi
+    if [ "$ROLLBACK_FAILED" -eq 1 ]; then
+        log_error "ROLLBACK INCOMPLETE. Leave the EFI mounted and restore the _OLD folders manually."
+    elif [ "$status" -ne 0 ] && [ "$MOUNTED_BY_SCRIPT" -eq 1 ] && [ -n "$TARGET_PARTITION" ]; then
+        diskutil unmount "$TARGET_PARTITION" >/dev/null 2>&1 ||
+            log_warn "Could not unmount $TARGET_PARTITION after the failure."
+    fi
+}
+trap cleanup EXIT
+trap 'log_error "Interrupted."; exit 130' INT
+trap 'log_error "Terminated."; exit 143' HUP TERM
 
-header
+clean_path() {
+    printf '%s' "$1" | sed "s/^['\"]//;s/['\"]$//;s/\\\\ / /g"
+}
 
-# 1. Check for Source Files
-# Verify that the script is being run from the correct location and the source files exist.
-if [ ! -d "$REPO_EFI_PATH" ]; then
-    log_error "Could not find source EFI folder at: $REPO_EFI_PATH"
-    log_warn "Please ensure you are running this script from the root of the repository."
-    exit 1
-fi
-log_success "Found source EFI files."
+normalize_efi_path() {
+    candidate=$(clean_path "$1")
+    [ -d "$candidate/EFI" ] && candidate="$candidate/EFI"
+    printf '%s' "$candidate"
+}
 
-# 2. Detect EFI Partition
-log_info "Scanning for EFI partitions..."
-
-# Get list of EFI partitions using diskutil.
-# Filters for "EFI" type, excludes "Container" (APFS containers), and prints the identifier (last column).
-# We use set -- to load them into positional parameters for POSIX sh compatibility (no arrays).
-EFI_LIST=$(diskutil list | grep "EFI" | grep -v "Container" | awk '{print $NF}')
-
-if [ -z "$EFI_LIST" ]; then
-    log_error "No EFI partitions found!"
-    exit 1
-fi
-
-# Load the list into positional parameters ($1, $2, etc.)
-set -- $EFI_LIST
-COUNT=$#
-
-TARGET_DISK=""
-
-if [ "$COUNT" -eq 1 ]; then
-    # If only one EFI partition is found, select it automatically.
-    TARGET_DISK=$1
-    log_info "Found single EFI partition: ${YELLOW}$TARGET_DISK${NC}"
-else
-    # If multiple partitions are found, prompt the user to select one.
-    log_info "Found multiple EFI partitions:"
-    i=0
-    for disk in "$@"; do
-        # Try to get device node info for better context (e.g., disk0s1)
-        # Note: diskutil info might fail in minimal sh environments, but usually present in Recovery.
-        NODE_INFO=$(diskutil info "$disk" | grep "Device Node" | awk '{print $3}')
-        printf "  [%d] ${YELLOW}%s${NC} (%s)\n" "$i" "$disk" "$NODE_INFO"
-        i=$((i + 1))
+validate_efi() {
+    source_path=$1
+    missing=""
+    for relative_path in BOOT/BOOTx64.efi OC/OpenCore.efi OC/config.plist; do
+        [ -f "$source_path/$relative_path" ] || missing="$missing $relative_path"
     done
+    if [ -n "$missing" ]; then
+        log_error "Incomplete OpenCore EFI. Missing:$missing"
+        return 1
+    fi
+    if ! plutil -lint "$source_path/OC/config.plist" >/dev/null 2>&1; then
+        log_error "OC/config.plist is not a valid property list."
+        return 1
+    fi
+    return 0
+}
 
-    printf "\n"
-    printf "Select partition number [0-$((COUNT - 1))]: "
-    read -r SELECTION
+verify_staged_copy() {
+    validate_efi "$STAGE_DIR" &&
+        diff -qr "$EFI_SOURCE/BOOT" "$STAGE_DIR/BOOT" >/dev/null 2>&1 &&
+        diff -qr "$EFI_SOURCE/OC" "$STAGE_DIR/OC" >/dev/null 2>&1
+}
 
-    # Validate selection is a number
-    case "$SELECTION" in
-        '' | *[!0-9]*)
-            log_error "Invalid selection."
-            exit 1
-            ;;
-    esac
+choose_efi_source() {
+    printf 'OpenCore needs a hardware-specific config.plist, drivers, and kexts.\n'
+    if validate_efi "$BUNDLED_EFI" 2>/dev/null; then
+        printf 'Press Enter to use the bundled EFI, or enter another EFI folder path: '
+    else
+        log_warn "The bundled EFI is incomplete and cannot boot by itself."
+        printf 'Enter or drag the path to a known-good EFI folder: '
+    fi
+    while :; do
+        read -r entered_path || exit 1
+        [ "$entered_path" = "q" ] && exit 0
+        if [ -z "$entered_path" ] && validate_efi "$BUNDLED_EFI" 2>/dev/null; then
+            EFI_SOURCE=$BUNDLED_EFI
+        else
+            EFI_SOURCE=$(normalize_efi_path "$entered_path")
+        fi
+        if validate_efi "$EFI_SOURCE"; then
+            log_success "Using EFI source: $EFI_SOURCE"
+            return 0
+        fi
+        printf 'Enter another EFI folder path, or q to quit: '
+    done
+}
 
-    if [ "$SELECTION" -ge "$COUNT" ]; then
-        log_error "Invalid selection."
+for cmd in diskutil plutil ditto mv rm mkdir rmdir sed awk sync du df diff date; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        log_error "Required command not found: $cmd"
         exit 1
     fi
+done
 
-    # Retrieve selection by iterating through the parameters
-    i=0
-    for disk in "$@"; do
-        if [ "$i" -eq "$SELECTION" ]; then
-            TARGET_DISK=$disk
-            break
-        fi
-        i=$((i + 1))
-    done
+printf '%s======================================================%s\n' "$CYAN" "$NC"
+printf '%s       OpenCore Bootloader Restoration Assistant      %s\n' "$CYAN" "$NC"
+printf '%s======================================================%s\n\n' "$CYAN" "$NC"
+
+choose_efi_source
+SOURCE_KB=$(du -sk "$EFI_SOURCE/BOOT" "$EFI_SOURCE/OC" | awk '{total += $1} END {print total}')
+case "$SOURCE_KB" in
+    '' | *[!0-9]*) die "Could not determine the EFI source size." ;;
+esac
+
+log_info "EFI partitions:"
+EFI_LIST=$(diskutil list | awk '$2 == "EFI" || $3 == "EFI" {print $NF}')
+if [ -z "$EFI_LIST" ]; then
+    log_error "No EFI partitions were found."
+    exit 1
 fi
 
-# 3. Confirm Action
-# Warn the user before making changes to the disk.
-printf "\n"
-log_warn "You are about to modify the EFI on: ${RED}$TARGET_DISK${NC}"
-printf "Are you sure? (y/N): "
+set -- $EFI_LIST
+COUNT=$#
+i=1
+for partition in "$@"; do
+    PARENT=$(diskutil info "$partition" | awk -F: '/Part of Whole:/ {sub(/^[^:]*:[ \t]*/, ""); print; exit}')
+    PARENT_INFO=$(diskutil info "$PARENT" 2>/dev/null || true)
+    MODEL=$(printf '%s\n' "$PARENT_INFO" | awk -F: '/Media Name:/ {sub(/^[^:]*:[ \t]*/, ""); print; exit}')
+    SIZE=$(printf '%s\n' "$PARENT_INFO" | awk -F: '/Disk Size:/ {sub(/^[^:]*:[ \t]*/, ""); print; exit}')
+    printf '  [%d] %-12s %s %s\n' "$i" "$partition" "${MODEL:-Unknown disk}" "${SIZE:-}"
+    i=$((i + 1))
+done
+
+printf 'Select the EFI partition [1-%d], or q to quit: ' "$COUNT"
+read -r SELECTION
+[ "$SELECTION" = "q" ] && exit 0
+case "$SELECTION" in
+    '' | *[!0-9]*)
+        log_error "Invalid selection."
+        exit 1
+        ;;
+esac
+if [ "$SELECTION" -lt 1 ] || [ "$SELECTION" -gt "$COUNT" ]; then
+    log_error "Selection is outside the displayed range."
+    exit 1
+fi
+
+i=1
+for partition in "$@"; do
+    if [ "$i" -eq "$SELECTION" ]; then
+        TARGET_PARTITION=$partition
+        break
+    fi
+    i=$((i + 1))
+done
+
+printf '\n'
+diskutil info "$TARGET_PARTITION" | awk -F: '/Device Node:|Part of Whole:|Volume Name:|Disk Size:/ {print}'
+log_warn "This will replace EFI/BOOT and EFI/OC on $TARGET_PARTITION. EFI/APPLE is preserved."
+printf 'Type RESTORE-%s to continue: ' "$TARGET_PARTITION"
 read -r CONFIRM
-case "$CONFIRM" in
-    [yY]*) ;;
-    *)
-        log_info "Operation cancelled."
-        exit 0
+if [ "$CONFIRM" != "RESTORE-$TARGET_PARTITION" ]; then
+    log_info "Cancelled; no changes were made."
+    exit 0
+fi
+
+CONFIRMED_INFO=$(diskutil info "$TARGET_PARTITION" 2>/dev/null) || die "The selected EFI partition disappeared after confirmation."
+CONFIRMED_ID=$(printf '%s\n' "$CONFIRMED_INFO" | awk -F: '/Device Identifier:/ {sub(/^[^:]*:[ \t]*/, ""); print; exit}')
+CONFIRMED_CONTENT=$(printf '%s\n' "$CONFIRMED_INFO" | awk -F: '/Content \(IOContent\):/ {sub(/^[^:]*:[ \t]*/, ""); print; exit}')
+if [ "$CONFIRMED_ID" != "$TARGET_PARTITION" ] || [ "$CONFIRMED_CONTENT" != "EFI" ]; then
+    die "The selected target is no longer the expected EFI partition. No files were changed."
+fi
+
+MOUNT_STATUS=$(diskutil info "$TARGET_PARTITION" | awk -F: '/Mounted:/ {sub(/^[^:]*:[ \t]*/, ""); print; exit}')
+if [ "$MOUNT_STATUS" != "Yes" ]; then
+    log_info "Mounting $TARGET_PARTITION..."
+    diskutil mount "$TARGET_PARTITION" >/dev/null || {
+        log_error "Failed to mount $TARGET_PARTITION."
+        exit 1
+    }
+    MOUNTED_BY_SCRIPT=1
+fi
+
+EFI_MOUNT_POINT=$(diskutil info "$TARGET_PARTITION" | awk -F: '/Mount Point:/ {sub(/^[^:]*:[ \t]*/, ""); print; exit}')
+if [ -z "$EFI_MOUNT_POINT" ] || [ ! -d "$EFI_MOUNT_POINT" ]; then
+    log_error "Could not determine the EFI mount point."
+    exit 1
+fi
+log_success "Mounted at $EFI_MOUNT_POINT"
+
+AVAILABLE_KB=$(df -kP "$EFI_MOUNT_POINT" | awk 'NR == 2 {print $4}')
+case "$AVAILABLE_KB" in
+    '' | *[!0-9]*) die "Could not determine free space on $TARGET_PARTITION." ;;
+esac
+if [ "$AVAILABLE_KB" -le $((SOURCE_KB + 1024)) ]; then
+    die "Staging needs ${SOURCE_KB} KiB, but $TARGET_PARTITION has only ${AVAILABLE_KB} KiB free."
+fi
+
+TIMESTAMP="$(date +%Y%m%d_%H%M%S)_$$"
+mkdir -p "$EFI_MOUNT_POINT/EFI" || die "Could not create the EFI directory on $TARGET_PARTITION."
+STAGE_DIR="$EFI_MOUNT_POINT/EFI/.restore_stage_$TIMESTAMP"
+mkdir "$STAGE_DIR" || die "Could not create the staging directory."
+
+log_info "Staging and verifying the new OpenCore files..."
+ditto "$EFI_SOURCE/BOOT" "$STAGE_DIR/BOOT" || die "Failed to stage the BOOT folder."
+ditto "$EFI_SOURCE/OC" "$STAGE_DIR/OC" || die "Failed to stage the OC folder."
+verify_staged_copy || {
+    log_error "Staged files failed verification; the existing EFI was not changed."
+    exit 1
+}
+
+if [ -d "$EFI_MOUNT_POINT/EFI/BOOT" ]; then
+    OLD_BOOT="$EFI_MOUNT_POINT/EFI/BOOT_OLD_$TIMESTAMP"
+    [ ! -e "$OLD_BOOT" ] || die "Backup destination already exists: $OLD_BOOT"
+    mv "$EFI_MOUNT_POINT/EFI/BOOT" "$OLD_BOOT" || die "Could not preserve the previous BOOT folder."
+    OLD_BOOT_MOVED=1
+fi
+if [ -d "$EFI_MOUNT_POINT/EFI/OC" ]; then
+    OLD_OC="$EFI_MOUNT_POINT/EFI/OC_OLD_$TIMESTAMP"
+    [ ! -e "$OLD_OC" ] || die "Backup destination already exists: $OLD_OC"
+    mv "$EFI_MOUNT_POINT/EFI/OC" "$OLD_OC" || die "Could not preserve the previous OC folder."
+    OLD_OC_MOVED=1
+fi
+
+mv "$STAGE_DIR/BOOT" "$EFI_MOUNT_POINT/EFI/BOOT" || die "Could not install the staged BOOT folder."
+NEW_BOOT_MOVED=1
+mv "$STAGE_DIR/OC" "$EFI_MOUNT_POINT/EFI/OC" || die "Could not install the staged OC folder."
+NEW_OC_MOVED=1
+validate_efi "$EFI_MOUNT_POINT/EFI" || die "Installed EFI validation failed; rollback will be attempted."
+INSTALL_COMMITTED=1
+if ! rmdir "$STAGE_DIR"; then
+    log_warn "Could not remove the empty staging directory; cleaning it separately."
+    rm -rf "$STAGE_DIR" || log_warn "Manual cleanup may be needed at $STAGE_DIR."
+fi
+STAGE_DIR=""
+sync || die "The EFI was installed, but filesystem synchronization failed."
+
+log_success "OpenCore restored. Previous BOOT/OC folders remain beside it with _OLD_$TIMESTAMP names."
+if [ "$MOUNTED_BY_SCRIPT" -eq 1 ]; then
+    printf 'Unmount the EFI partition now? [Y/n]: '
+    read -r UNMOUNT_CHOICE
+    case "$UNMOUNT_CHOICE" in
+        [nN]*) ;;
+        *)
+            if diskutil unmount "$TARGET_PARTITION" >/dev/null; then
+                MOUNTED_BY_SCRIPT=0
+                log_success "EFI partition unmounted."
+            else
+                log_warn "Could not unmount $TARGET_PARTITION; leave it connected until writes finish."
+            fi
+            ;;
+    esac
+fi
+
+printf 'Clear NVRAM now? [y/N]: '
+read -r CLEAR_CHOICE
+case "$CLEAR_CHOICE" in
+    [yY]*)
+        if command -v nvram >/dev/null 2>&1 && nvram -c; then
+            log_success "NVRAM cleared."
+        else
+            log_warn "NVRAM could not be cleared automatically."
+        fi
         ;;
 esac
 
-# 4. Mount EFI
-# Mount the selected EFI partition to access its contents.
-log_info "Mounting $TARGET_DISK..."
-diskutil mount "$TARGET_DISK" >/dev/null
-if [ $? -ne 0 ]; then
-    log_error "Failed to mount $TARGET_DISK"
-    exit 1
-fi
-
-EFI_MOUNT_POINT="/Volumes/EFI"
-# Check if it mounted to a different number (e.g. /Volumes/EFI 1) if /Volumes/EFI is occupied.
-if [ ! -d "$EFI_MOUNT_POINT" ]; then
-    # Try to find where it mounted by parsing the 'mount' command output.
-    # We use ' \(' as separator to handle the mount options part safely
-    EFI_MOUNT_POINT=$(mount | grep "$TARGET_DISK" | awk -F ' on ' '{print $2}' | awk -F ' \\(' '{print $1}')
-fi
-
-log_success "Mounted at: $EFI_MOUNT_POINT"
-
-# 5. Backup Existing EFI
-# Create a full backup of the current EFI folder before making changes.
-if [ -d "$EFI_MOUNT_POINT/EFI" ]; then
-    log_info "Backing up existing EFI to $BACKUP_DIR..."
-    mkdir -p "$BACKUP_DIR"
-    cp -R "$EFI_MOUNT_POINT/EFI" "$BACKUP_DIR/"
-    if [ $? -eq 0 ]; then
-        log_success "Backup created successfully."
-    else
-        log_warn "Backup failed or completed with errors."
-    fi
-else
-    log_info "No existing EFI folder found. Skipping backup."
-fi
-
-# 6. Restore EFI
-# Restore the OpenCore bootloader files.
-log_info "Restoring OpenCore EFI..."
-
-# Ensure EFI directory exists on the target partition
-mkdir -p "$EFI_MOUNT_POINT/EFI"
-
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-
-# Rename existing BOOT folder if it exists to preserve it (non-destructive update)
-if [ -d "$EFI_MOUNT_POINT/EFI/BOOT" ]; then
-    log_info "Renaming existing BOOT to BOOT_OLD_$TIMESTAMP..."
-    mv "$EFI_MOUNT_POINT/EFI/BOOT" "$EFI_MOUNT_POINT/EFI/BOOT_OLD_$TIMESTAMP"
-fi
-
-# Rename existing OC folder if it exists
-if [ -d "$EFI_MOUNT_POINT/EFI/OC" ]; then
-    log_info "Renaming existing OC to OC_OLD_$TIMESTAMP..."
-    mv "$EFI_MOUNT_POINT/EFI/OC" "$EFI_MOUNT_POINT/EFI/OC_OLD_$TIMESTAMP"
-fi
-
-# Copy new folders from the repository
-log_info "Copying new BOOT and OC folders..."
-cp -R "$REPO_EFI_PATH/BOOT" "$EFI_MOUNT_POINT/EFI/"
-cp -R "$REPO_EFI_PATH/OC" "$EFI_MOUNT_POINT/EFI/"
-
-if [ $? -eq 0 ]; then
-    log_success "EFI folders restored successfully!"
-else
-    log_error "Failed to copy EFI files."
-    exit 1
-fi
-
-# 7. Final Steps
-# Clear NVRAM and shutdown to ensure the new bootloader is picked up by the firmware.
-printf "\n"
-printf "${CYAN}======================================================${NC}\n"
-printf "${GREEN}               Restoration Complete!                  ${NC}\n"
-printf "${CYAN}======================================================${NC}\n"
-printf "\n"
-log_warn "IMPORTANT: We need to clear NVRAM to ensure the new boot entry is found."
-printf "The system will now clear NVRAM and SHUT DOWN.\n"
-printf "Please perform a COLD BOOT (Power button) after shutdown.\n"
-printf "\n"
-printf "Press Enter to clear NVRAM and Shutdown..."
-read -r DUMMY
-: "$DUMMY"
-
-log_info "Clearing NVRAM..."
-nvram -c
-
-log_info "Shutting down..."
-shutdown -h now
+printf 'Shut down now for a cold boot? [y/N]: '
+read -r SHUTDOWN_CHOICE
+case "$SHUTDOWN_CHOICE" in
+    [yY]*)
+        if command -v shutdown >/dev/null 2>&1; then
+            shutdown -h now
+        else
+            log_warn "shutdown command is unavailable; shut down from the Apple menu."
+        fi
+        ;;
+    *) log_info "When ready, shut down fully and start while holding Option to choose EFI Boot." ;;
+esac

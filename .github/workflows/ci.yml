@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Run ShellCheck
         uses: ludeeus/action-shellcheck@master
@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install shfmt
         run: sudo snap install shfmt
@@ -33,16 +33,49 @@ jobs:
       - name: Check Formatting
         run: shfmt -d -i 4 -ci .
 
-  test:
-    name: Run Tests
+  shell-tests:
+    name: Shell Integration Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Run Test Suite
+      - name: Run mocked disk test suites
         run: |
-          chmod +x restore.sh
-          chmod +x tests/test_restore.sh
+          chmod +x create_usb.sh create_usb_linux.sh restore.sh tests/*.sh
           cd tests
           ./test_restore.sh
+          ./test_create_usb_macos.sh
+          ./test_create_usb_linux.sh
+
+  powershell-tests:
+    name: PowerShell Tests
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Parse and test with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\create_usb.ps1), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count) { $errors | Format-List; exit 1 }
+          .\tests\test_create_usb.ps1
+
+      - name: Parse and test with PowerShell
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\create_usb.ps1), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count) { $errors | Format-List; exit 1 }
+          .\tests\test_create_usb.ps1
+
+      - name: Run PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          $findings = @(Invoke-ScriptAnalyzer .\create_usb.ps1 -Severity Warning,Error)
+          if ($findings.Count) { $findings | Format-List; exit 1 }

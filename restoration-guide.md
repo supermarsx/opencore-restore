@@ -106,34 +106,34 @@ If `EFI` doesn’t exist, we’ll create it when copying OpenCore.
 
 ---
 
-## 5. Option A – Use OpenCore from OpenCore-Patcher.app
+## 5. Option A – Use a Previously Generated OpenCore EFI
 
-If you’re using **OpenCore Legacy Patcher (OCLP)** and have `OpenCore-Patcher.app` on your main macOS volume, you can copy its bundled EFI directly.
+Use an EFI folder that was previously generated for this exact Mac and was known to boot. A generic OpenCore release or files copied from inside an application bundle are not substitutes for the generated `config.plist`, drivers, and kexts.
 
-### 5.1. Go into the app bundle
+### 5.1. Locate the backup
 
-Replace the volume name if needed:
+Mount the USB or volume containing your backup and verify its layout. Replace `RESCUE` with its actual volume name:
 
 ```bash
-cd "/Volumes/Macintosh HD/Applications/OpenCore-Patcher.app/Contents/Resources"
-ls
+ls "/Volumes/RESCUE/EFI/BOOT/BOOTx64.efi"
+ls "/Volumes/RESCUE/EFI/OC/OpenCore.efi"
+ls "/Volumes/RESCUE/EFI/OC/config.plist"
 ```
 
-You should see an `EFI` directory here. This is a complete, ready-to-use EFI layout for your hardware (as configured by OCLP).
+All three files must exist. Keep using the same generated EFI as a unit; mixing a configuration with binaries from a different OpenCore version can prevent booting.
 
 ### 5.2. Backup existing EFI (optional but recommended)
 
 ```bash
-mkdir -p /Volumes/EFI_backup
-cp -R /Volumes/EFI/EFI /Volumes/EFI_backup/EFI_$(date +%s) 2>/dev/null || true
+BACKUP_DIR="/Volumes/RESCUE/EFI_BACKUPS/EFI_$(date +%s)"
+mkdir -p "$BACKUP_DIR"
+cp -R /Volumes/EFI/EFI "$BACKUP_DIR/"
 ```
 
 ### 5.3. Copy the OpenCore EFI to the system EFI partition
 
-From inside `.../OpenCore-Patcher.app/Contents/Resources`:
-
 ```bash
-cp -R EFI /Volumes/EFI/
+cp -R "/Volumes/RESCUE/EFI" /Volumes/EFI/
 ```
 
 After this, you should have:
@@ -143,16 +143,13 @@ After this, you should have:
 /Volumes/EFI/EFI/BOOT/BOOTx64.efi
 ```
 
-If `BOOT` doesn’t exist, we’ll fix that in section 7.
+Both files, plus `/Volumes/EFI/EFI/OC/config.plist`, must be present before attempting to boot.
 
 ---
 
 ## 6. Option B – Use the Official OpenCorePkg ZIP
 
-If you don’t have OpenCore-Patcher, you can pull OpenCore from the official Acidanthera release:
-
-> Example: `OpenCore-1.0.6-RELEASE.zip` from:\
-> `https://github.com/acidanthera/OpenCorePkg/releases/download/1.0.6/OpenCore-1.0.6-RELEASE.zip`
+OpenCorePkg can update an existing, known-good EFI, but it does not provide a configuration for your hardware. Use the exact release required by your configuration and download it from the official Acidanthera releases page.
 
 ### 6.1. Get the ZIP into Recovery
 
@@ -161,18 +158,14 @@ You have a few options:
 - **From another machine**: Download the ZIP, put it on a USB drive, plug it into the Hackintosh, then in Recovery:
   - Use `diskutil list` to find the USB volume
   - Mount it: `diskutil mount diskXsY`
-- **From Recovery via network** (if networking works):
-  ```bash
-  cd /tmp
-  curl -L -o OpenCore-1.0.6-RELEASE.zip "https://github.com/acidanthera/OpenCorePkg/releases/download/1.0.6/OpenCore-1.0.6-RELEASE.zip"
-  ```
+- **From Recovery via network**: Download the exact release URL you selected on another device. Do not guess a version number during recovery.
 
 ### 6.2. Unzip and locate the EFI folder
 
 ```bash
 cd /tmp
-unzip OpenCore-1.0.6-RELEASE.zip
-cd OpenCore-1.0.6-RELEASE
+unzip OpenCore-*-RELEASE.zip
+cd OpenCore-*-RELEASE
 ls
 ```
 
@@ -183,18 +176,18 @@ Typically, you’ll see something like:
 
 ### 6.3. **Important Configuration Warning**
 
-The OpenCorePkg ZIP provides a **generic** OpenCore build and sample `config.plist`—these are **not** tailored to your hardware.
+The release provides OpenCore binaries and `Docs/Sample.plist`. It does not place a ready-to-use `config.plist` in `X64/EFI/OC`.
 
 In most cases you should **NOT** simply use the sample config. Instead:
 
-- Reuse your previous working ``, **Kexts**, and **Drivers** if you have a backup
-- Only replace the **OpenCore.efi** (and possibly drivers) with the newer ones from this release
+- Reuse your previous working **config.plist**, **Kexts**, and machine-specific ACPI files.
+- Update OpenCore, its drivers, tools, and configuration keys as one compatible set by following the release documentation.
 
 If you don’t have a previous config, follow the Dortania guide later to build a correct config from scratch.
 
-### 6.4. Copy OpenCore into the EFI partition
+### 6.4. Update an Existing EFI
 
-Assuming you have your own EFI (backed up somewhere) or you’re reconstructing it, the target layout on the EFI partition should be:
+Start from a backup of your complete working EFI. The target layout remains:
 
 ```text
 /Volumes/EFI/EFI/OC/          ← Your config.plist, Kexts, Drivers, Tools
@@ -202,27 +195,11 @@ Assuming you have your own EFI (backed up somewhere) or you’re reconstructing 
 /Volumes/EFI/EFI/BOOT/BOOTx64.efi
 ```
 
-If you are building from the release `X64/EFI` directory, you can do:
-
-```bash
-# Create the EFI directory if missing
-mkdir -p /Volumes/EFI/EFI
-
-# Copy base EFI from release (be careful: this overwrites!)
-cp -R X64/EFI /Volumes/EFI/
-```
-
-Then restore your known-good `config.plist`, Kexts, and Drivers into `/Volumes/EFI/EFI/OC/` as needed.
-
-If you only want to update OpenCore.efi itself:
-
-```bash
-cp X64/EFI/OC/OpenCore.efi /Volumes/EFI/EFI/OC/OpenCore.efi
-```
+Do not overwrite this layout with `X64/EFI` and do not update only `OpenCore.efi`. Version-mismatched drivers or configuration keys can stop OpenCore before the picker appears. Complete the upgrade on a working machine, validate it, and then use the resulting EFI as the source for this kit.
 
 ---
 
-## 7. Ensure BOOTx64.efi Points to OpenCore (Fallback Loader)
+## 7. Verify the Fallback Loader
 
 Many UEFI firmwares will always attempt to boot:
 
@@ -230,16 +207,15 @@ Many UEFI firmwares will always attempt to boot:
 EFI/BOOT/BOOTx64.efi
 ```
 
-You can force firmware to load OpenCore by making `BOOTx64.efi` a copy of `OpenCore.efi`.
-
-From Recovery Terminal:
+Use the `BOOTx64.efi` supplied with the same OpenCore build as the rest of your EFI. It is a separate loader; do not replace it with a renamed copy of `OpenCore.efi`.
 
 ```bash
-mkdir -p /Volumes/EFI/EFI/BOOT
-cp /Volumes/EFI/EFI/OC/OpenCore.efi /Volumes/EFI/EFI/BOOT/BOOTx64.efi
+ls -l /Volumes/EFI/EFI/BOOT/BOOTx64.efi
+ls -l /Volumes/EFI/EFI/OC/OpenCore.efi
+ls -l /Volumes/EFI/EFI/OC/config.plist
 ```
 
-This is a **key step** when the BIOS boot entry for OpenCore has been wiped.
+If any file is missing, return to your complete known-good EFI source and copy the matching folder again.
 
 ---
 
@@ -331,13 +307,13 @@ diskutil list
 # 2. Mount EFI
 diskutil mount disk0s1
 
-# 3. (Option A) Copy EFI from OpenCore-Patcher.app
-cd "/Volumes/Macintosh HD/Applications/OpenCore-Patcher.app/Contents/Resources"
-cp -R EFI /Volumes/EFI/
+# 3. (Option A) Copy a complete, previously generated EFI
+cp -R "/Volumes/RESCUE/EFI" /Volumes/EFI/
 
-# 4. Ensure fallback BOOTx64.efi exists and points to OpenCore
-mkdir -p /Volumes/EFI/EFI/BOOT
-cp /Volumes/EFI/EFI/OC/OpenCore.efi /Volumes/EFI/EFI/BOOT/BOOTx64.efi
+# 4. Verify the complete layout
+ls /Volumes/EFI/EFI/BOOT/BOOTx64.efi
+ls /Volumes/EFI/EFI/OC/OpenCore.efi
+ls /Volumes/EFI/EFI/OC/config.plist
 
 # 5. Clear NVRAM
 nvram -c
@@ -346,23 +322,7 @@ nvram -c
 reboot
 ```
 
-Or, if using the official OpenCorePkg ZIP (and already unzipped X64/EFI):
-
-```bash
-# Copy complete EFI layout (be careful: overwrites!)
-cp -R X64/EFI /Volumes/EFI/
-
-# Or only update OpenCore.efi
-cp X64/EFI/OC/OpenCore.efi /Volumes/EFI/EFI/OC/OpenCore.efi
-
-# Then ensure BOOTx64.efi
-mkdir -p /Volumes/EFI/EFI/BOOT
-cp /Volumes/EFI/EFI/OC/OpenCore.efi /Volumes/EFI/EFI/BOOT/BOOTx64.efi
-
-# Clear NVRAM and reboot
-nvram -c
-reboot
-```
+Do not substitute the official package's generic `X64/EFI` tree for the complete generated EFI in this sequence.
 
 ---
 

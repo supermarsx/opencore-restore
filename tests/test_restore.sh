@@ -1,175 +1,197 @@
 #!/bin/sh
 
-# ==============================================================================
-# Test Suite for OpenCore Restoration Script
-# ==============================================================================
-#
-# Description:
-#   Mocks system commands (diskutil, mount, cp, mv, nvram, shutdown) to verify
-#   the logic of restore.sh without modifying the actual system.
-#
-# Usage:
-#   cd tests
-#   ./test_restore.sh
-#
-# ==============================================================================
+# Non-destructive integration tests for restore.sh using mocked macOS commands.
 
-# Ensure we are running from the tests directory
+set -u
+
 cd "$(dirname "$0")" || exit 1
-
-# --- Setup Mock Environment ---
-TEST_DIR="./test_env"
+TEST_DIR="$PWD/test_env"
 MOCK_BIN="$TEST_DIR/bin"
-MOCK_VOLUMES="$TEST_DIR/Volumes"
-MOCK_REPO="$TEST_DIR/repo"
-MOCK_EFI_PARTITION="$MOCK_VOLUMES/EFI"
+RUNTIME="$TEST_DIR/runtime"
+MOCK_EFI_MOUNT="$RUNTIME/Volumes/EFI"
+export MOCK_EFI_MOUNT
 
-# Clean up previous run
 rm -rf "$TEST_DIR"
-mkdir -p "$MOCK_BIN"
-mkdir -p "$MOCK_VOLUMES"
-mkdir -p "$MOCK_REPO/BOOTEFIX64/EFI/BOOT"
-mkdir -p "$MOCK_REPO/BOOTEFIX64/EFI/OC"
+mkdir -p "$MOCK_BIN" "$MOCK_EFI_MOUNT/EFI/BOOT" "$MOCK_EFI_MOUNT/EFI/OC"
+mkdir -p "$RUNTIME/BOOTEFIX64/EFI/BOOT" "$RUNTIME/BOOTEFIX64/EFI/OC"
 
-# Create dummy source files
-touch "$MOCK_REPO/BOOTEFIX64/EFI/BOOT/BOOTx64.efi"
-touch "$MOCK_REPO/BOOTEFIX64/EFI/OC/OpenCore.efi"
+touch "$RUNTIME/BOOTEFIX64/EFI/BOOT/BOOTx64.efi"
+touch "$RUNTIME/BOOTEFIX64/EFI/OC/OpenCore.efi"
+cat >"$RUNTIME/BOOTEFIX64/EFI/OC/config.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict/></plist>
+EOF
+reset_target() {
+    rm -rf "$MOCK_EFI_MOUNT/EFI"
+    mkdir -p "$MOCK_EFI_MOUNT/EFI/BOOT" "$MOCK_EFI_MOUNT/EFI/OC"
+    touch "$MOCK_EFI_MOUNT/EFI/BOOT/old_boot.efi"
+    touch "$MOCK_EFI_MOUNT/EFI/OC/old_oc.efi"
+}
+reset_target
 
-# Add mock bin to PATH
-export PATH="$PWD/$MOCK_BIN:$PATH"
+cp ../restore.sh "$RUNTIME/restore.sh"
+chmod +x "$RUNTIME/restore.sh"
 
-# --- Mock Commands ---
-
-# Mock diskutil
-cat <<'EOF' >"$MOCK_BIN/diskutil"
+cat >"$MOCK_BIN/diskutil" <<'EOF'
 #!/bin/sh
-if [ "$1" = "list" ]; then
-    echo "/dev/disk0 (GUID Partition Scheme)"
-    echo "   1: EFI EFI                     209.7 MB  disk0s1"
-    echo "   2: Apple_APFS Container        100.0 GB  disk0s2"
-elif [ "$1" = "info" ]; then
-    echo "   Device Node:               /dev/disk0s1"
-elif [ "$1" = "mount" ]; then
-    echo "Volume EFI on disk0s1 mounted"
+case "$1" in
+    list)
+        printf '/dev/disk0 (internal, physical):\n'
+        printf '   1: EFI EFI 209.7 MB disk0s1\n'
+        ;;
+    info)
+        if [ "$2" = "disk0s1" ]; then
+            printf '   Device Node: /dev/disk0s1\n'
+            printf '   Device Identifier: disk0s1\n'
+            printf '   Content (IOContent): EFI\n'
+            printf '   Part of Whole: disk0\n'
+            printf '   Volume Name: EFI\n'
+            printf '   Disk Size: 209.7 MB\n'
+            printf '   Mounted: No\n'
+            printf '   Mount Point: %s\n' "$MOCK_EFI_MOUNT"
+        else
+            printf '   Media Name: Mock Internal Disk\n'
+            printf '   Disk Size: 500.0 GB\n'
+        fi
+        ;;
+    mount|unmount) exit 0 ;;
+    *) exit 1 ;;
+esac
+EOF
+
+cat >"$MOCK_BIN/df" <<'EOF'
+#!/bin/sh
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+if [ "${LOW_SPACE:-0}" = "1" ]; then
+    printf '/dev/mock 1000 999 1 99%% %s\n' "$MOCK_EFI_MOUNT"
 else
-    echo "diskutil mock: unknown command $1"
+    printf '/dev/mock 1000000 1 999999 1%% %s\n' "$MOCK_EFI_MOUNT"
 fi
 EOF
-chmod +x "$MOCK_BIN/diskutil"
 
-# Mock mount (for check)
-# Will be overwritten later with correct path
-cat <<'EOF' >"$MOCK_BIN/mount"
+cat >"$MOCK_BIN/ditto" <<'EOF'
 #!/bin/sh
-echo "mount mock"
+cp -R "$1" "$2"
 EOF
-chmod +x "$MOCK_BIN/mount"
 
-# Mock nvram
-cat <<'EOF' >"$MOCK_BIN/nvram"
+cat >"$MOCK_BIN/plutil" <<'EOF'
 #!/bin/sh
-echo "nvram: clearing..."
+last=""
+for argument in "$@"; do last=$argument; done
+[ -f "$last" ]
 EOF
-chmod +x "$MOCK_BIN/nvram"
 
-# Mock shutdown
-cat <<'EOF' >"$MOCK_BIN/shutdown"
+REAL_MV=$(command -v mv)
+export REAL_MV
+cat >"$MOCK_BIN/mv" <<'EOF'
 #!/bin/sh
-echo "shutdown: system halting..."
+case "$1" in
+    */.restore_stage_*/OC)
+        if [ "${FAIL_OC_INSTALL:-0}" = "1" ]; then
+            exit 71
+        fi
+        ;;
+esac
+exec "$REAL_MV" "$@"
 EOF
-chmod +x "$MOCK_BIN/shutdown"
 
-# --- Run Test ---
+chmod +x "$MOCK_BIN/diskutil" "$MOCK_BIN/df" "$MOCK_BIN/ditto" "$MOCK_BIN/plutil" "$MOCK_BIN/mv"
+export PATH="$MOCK_BIN:$PATH"
 
-echo "Running restore.sh in test environment..."
+failures=0
+assert_file() {
+    if [ -f "$1" ]; then
+        printf '[PASS] %s\n' "$2"
+    else
+        printf '[FAIL] %s\n' "$2"
+        failures=$((failures + 1))
+    fi
+}
 
-# Copy restore.sh to test dir
-if [ ! -f "../restore.sh" ]; then
-    echo "Error: ../restore.sh not found!"
+printf 'Running successful staged-restore test...\n'
+(
+    cd "$RUNTIME" || exit 1
+    printf '\n1\nRESTORE-disk0s1\n\n\n\n' | ./restore.sh
+)
+restore_status=$?
+if [ "$restore_status" -eq 0 ]; then
+    printf '[PASS] restore exited successfully\n'
+else
+    printf '[FAIL] restore exited with %s\n' "$restore_status"
+    failures=$((failures + 1))
+fi
+
+assert_file "$MOCK_EFI_MOUNT/EFI/BOOT/BOOTx64.efi" 'new BOOT loader installed'
+assert_file "$MOCK_EFI_MOUNT/EFI/OC/OpenCore.efi" 'new OpenCore binary installed'
+assert_file "$MOCK_EFI_MOUNT/EFI/OC/config.plist" 'config.plist installed'
+
+old_boot_found=0
+old_oc_found=0
+for old_folder in "$MOCK_EFI_MOUNT"/EFI/BOOT_OLD_*; do
+    [ -f "$old_folder/old_boot.efi" ] && old_boot_found=1
+done
+for old_folder in "$MOCK_EFI_MOUNT"/EFI/OC_OLD_*; do
+    [ -f "$old_folder/old_oc.efi" ] && old_oc_found=1
+done
+if [ "$old_boot_found" -eq 1 ] && [ "$old_oc_found" -eq 1 ]; then
+    printf '[PASS] previous BOOT and OC folders preserved\n'
+else
+    printf '[FAIL] previous BOOT and OC folders were not preserved\n'
+    failures=$((failures + 1))
+fi
+
+stage_found=0
+for stage_folder in "$MOCK_EFI_MOUNT"/EFI/.restore_stage_*; do
+    [ -d "$stage_folder" ] && stage_found=1
+done
+if [ "$stage_found" -eq 1 ]; then
+    printf '[FAIL] staging directory was not cleaned up\n'
+    failures=$((failures + 1))
+else
+    printf '[PASS] staging directory cleaned up\n'
+fi
+
+printf 'Running forced-install-failure rollback test...\n'
+reset_target
+(
+    cd "$RUNTIME" || exit 1
+    printf '\n1\nRESTORE-disk0s1\n' | FAIL_OC_INSTALL=1 ./restore.sh
+)
+rollback_status=$?
+if [ "$rollback_status" -ne 0 ]; then
+    printf '[PASS] injected install failure returned nonzero\n'
+else
+    printf '[FAIL] injected install failure unexpectedly succeeded\n'
+    failures=$((failures + 1))
+fi
+assert_file "$MOCK_EFI_MOUNT/EFI/BOOT/old_boot.efi" 'previous BOOT restored after install failure'
+assert_file "$MOCK_EFI_MOUNT/EFI/OC/old_oc.efi" 'previous OC restored after install failure'
+if [ -f "$MOCK_EFI_MOUNT/EFI/BOOT/BOOTx64.efi" ]; then
+    printf '[FAIL] partial BOOT installation remained after rollback\n'
+    failures=$((failures + 1))
+else
+    printf '[PASS] partial BOOT installation removed during rollback\n'
+fi
+
+printf 'Running insufficient-space test...\n'
+reset_target
+(
+    cd "$RUNTIME" || exit 1
+    printf '\n1\nRESTORE-disk0s1\n' | LOW_SPACE=1 ./restore.sh
+)
+space_status=$?
+if [ "$space_status" -ne 0 ]; then
+    printf '[PASS] insufficient space returned nonzero\n'
+else
+    printf '[FAIL] insufficient space unexpectedly succeeded\n'
+    failures=$((failures + 1))
+fi
+assert_file "$MOCK_EFI_MOUNT/EFI/BOOT/old_boot.efi" 'low-space failure left BOOT unchanged'
+assert_file "$MOCK_EFI_MOUNT/EFI/OC/old_oc.efi" 'low-space failure left OC unchanged'
+
+rm -rf "$TEST_DIR"
+if [ "$failures" -ne 0 ]; then
+    printf '%s test(s) failed.\n' "$failures"
     exit 1
 fi
-
-cp ../restore.sh "$TEST_DIR/restore.sh"
-chmod +x "$TEST_DIR/restore.sh"
-
-# Create the expected repo structure in the test dir
-cp -R "$MOCK_REPO/BOOTEFIX64" "$TEST_DIR/"
-
-# Create a fake existing EFI to test backup/rename
-mkdir -p "$MOCK_EFI_PARTITION/EFI/BOOT"
-mkdir -p "$MOCK_EFI_PARTITION/EFI/OC"
-touch "$MOCK_EFI_PARTITION/EFI/BOOT/old_boot.efi"
-touch "$MOCK_EFI_PARTITION/EFI/OC/old_oc.efi"
-
-# We need to trick the script into thinking /Volumes/EFI is our mock volume
-# The script uses absolute path /Volumes/EFI.
-# We use sed to patch the script for testing.
-
-# When running restore.sh, we are inside TEST_DIR.
-# So the path to Volumes is just ./Volumes
-RUNTIME_MOCK_VOLUMES="./Volumes"
-
-# Replace /Volumes/EFI with our mock path
-# Use | as delimiter to avoid escaping slashes
-# We replace the whole line to be safe
-sed "s|EFI_MOUNT_POINT=\"/Volumes/EFI\"|EFI_MOUNT_POINT=\"$RUNTIME_MOCK_VOLUMES/EFI\"|g" "$TEST_DIR/restore.sh" >"$TEST_DIR/restore.sh.tmp"
-mv "$TEST_DIR/restore.sh.tmp" "$TEST_DIR/restore.sh"
-
-# Replace /Volumes/EFI_BACKUP with our mock path
-# We replace the whole line prefix
-sed "s|BACKUP_DIR=\"/Volumes/EFI_BACKUP_|BACKUP_DIR=\"$RUNTIME_MOCK_VOLUMES/EFI_BACKUP_|g" "$TEST_DIR/restore.sh" >"$TEST_DIR/restore.sh.tmp"
-mv "$TEST_DIR/restore.sh.tmp" "$TEST_DIR/restore.sh"
-
-chmod +x "$TEST_DIR/restore.sh"
-
-# Also update the mock mount script to return the path relative to CWD or absolute
-# Since we are inside TEST_DIR, ./Volumes/EFI is correct.
-cat <<EOF >"$MOCK_BIN/mount"
-#!/bin/sh
-echo "/dev/disk0s1 on $RUNTIME_MOCK_VOLUMES/EFI (msdos, local, nodev, nosuid, noowners)"
-EOF
-chmod +x "$MOCK_BIN/mount"
-
-# Run the script
-# We pipe "y" to confirm the prompt, and "enter" for the final prompt
-cd "$TEST_DIR" || exit 1
-printf "y\n\n" | ./restore.sh
-
-EXIT_CODE=$?
-
-# --- Assertions ---
-
-echo ""
-echo "--- Test Results ---"
-
-if [ $EXIT_CODE -eq 0 ]; then
-    echo "[PASS] Script exited with 0"
-else
-    echo "[FAIL] Script exited with $EXIT_CODE"
-fi
-
-# Check if backup was created
-# We are inside TEST_DIR now, so use relative paths
-BACKUP_COUNT=$(ls -d Volumes/EFI_BACKUP_* 2>/dev/null | wc -l)
-if [ "$BACKUP_COUNT" -ge 1 ]; then
-    echo "[PASS] Backup directory created"
-else
-    echo "[FAIL] Backup directory NOT created"
-fi
-
-# Check if new files exist
-if [ -f "Volumes/EFI/EFI/BOOT/BOOTx64.efi" ]; then
-    echo "[PASS] New BOOTx64.efi found"
-else
-    echo "[FAIL] New BOOTx64.efi NOT found"
-fi
-
-# Check if old files were renamed
-OLD_BOOT_COUNT=$(ls -d Volumes/EFI/EFI/BOOT_OLD_* 2>/dev/null | wc -l)
-if [ "$OLD_BOOT_COUNT" -ge 1 ]; then
-    echo "[PASS] Old BOOT folder renamed"
-else
-    echo "[FAIL] Old BOOT folder NOT renamed"
-fi
-
-echo "--- End Test ---"
+printf 'All restore tests passed.\n'

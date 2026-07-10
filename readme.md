@@ -14,7 +14,10 @@
 
 **Did you accidentally update macOS and lose access to your system?**
 
-This repository provides a "Rescue Kit" to help you boot back into macOS when your OpenCore installation has been overwritten, bypassed, or corrupted during a system update.
+This repository provides interactive tools for installing a known-good OpenCore EFI onto a rescue USB or an existing EFI partition. It does not generate an OpenCore configuration for your Mac.
+
+> [!IMPORTANT]
+> You must supply a complete EFI folder built for the target Mac. It must contain `EFI/BOOT/BOOTx64.efi`, `EFI/OC/OpenCore.efi`, and `EFI/OC/config.plist`. The files under `BOOTEFIX64` are an incomplete binary base and are not bootable by themselves. The scripts validate the source before allowing a disk to be changed.
 
 
 ## ⚡ Choose Your Recovery Method
@@ -24,55 +27,62 @@ Select the method that best fits your situation:
 | Method | Requirements | Difficulty | Best For |
 | :--- | :--- | :--- | :--- |
 | **[1. Rescue USB](#1-rescue-usb-method-recommended)** | Another PC/Mac + USB Drive | ⭐ Easy | Most reliable method. |
-| **[2. Local Recovery](#2-local-recovery-no-usb-no-internet)** | `OpenCore-Patcher` app on disk | ⭐⭐ Medium | No USB or Internet needed. |
-| **[3. Internet Recovery (Official)](#3-internet-recovery-no-usb-with-internet)** | Internet connection in Recovery | ⭐⭐⭐ Hard | Downloads generic OpenCore. |
-| **[4. Internet Rescue Kit (Repo)](#4-internet-recovery-using-this-rescue-kit)** | Internet connection in Recovery | ⭐⭐ Medium | Downloads this specific rescue kit. |
+| **[2. Local Recovery](#2-local-recovery-no-usb-no-internet)** | Known-good EFI on a mounted volume | ⭐⭐ Medium | No script download needed. |
+| **[3. Official OpenCore Package](#3-official-opencore-package-advanced)** | Existing config + upgrade knowledge | ⭐⭐⭐ Hard | Updating an existing EFI, not initial rescue. |
+| **[4. Automated EFI Restore](#4-automated-efi-restore-in-recovery)** | Recovery + known-good EFI | ⭐⭐ Medium | Safely installs and preserves the old EFI. |
 
 
 ## 1. Rescue USB Method (Recommended)
 
-**Requirements:** Another computer (Windows/Mac/Linux) and a USB drive.
+**Requirements:** Another computer (Windows/macOS/Linux), a USB drive, and a complete EFI folder previously built for the Mac you need to recover.
+
+Download or clone this repository, extract it if necessary, and keep your known-good `EFI` folder somewhere accessible. The scripts ask for its path; on macOS and Windows you can drag the folder into the terminal window instead of typing the path.
 
 ### Automated Creation
 
 We provide automated scripts for all major operating systems to easily create the rescue USB.
 
+Each creator validates the complete EFI source before listing targets, rejects system disks and sources stored on the target, rechecks device identity after the final confirmation, verifies capacity and partition type, and compares the complete copied file tree. Any failure exits nonzero and reports whether the USB may be incomplete.
+
 #### 🍎 macOS
-1.  Open Terminal.
-2.  Run:
+1. Open Terminal and change to the extracted repository folder.
+2. Run:
     ```bash
-    ./create_usb.sh
+    sh ./create_usb.sh
     ```
-3.  Follow the on-screen prompts.
+3. Follow the prompts to select the EFI source and external disk. The script refuses internal disks.
 
 #### 🪟 Windows
-1.  Right-click `create_usb.ps1` and select **"Run with PowerShell"**.
-2.  Follow the prompts to select your USB drive.
-    *   *Note: Requires Administrator privileges.*
+1. Open **PowerShell as Administrator** and change to the extracted repository folder.
+2. Run:
+    ```powershell
+    powershell -ExecutionPolicy Bypass -File .\create_usb.ps1
+    ```
+3. Follow the prompts. Windows creates a 1 GiB FAT32 boot partition so the process also works on USB drives larger than 32 GiB.
 
 #### 🐧 Linux
-1.  Open Terminal.
-2.  Run with sudo:
+1. Open Terminal and change to the extracted repository folder.
+2. Run with sudo:
     ```bash
-    sudo ./create_usb_linux.sh
+    sudo sh ./create_usb_linux.sh
     ```
-3.  Follow the prompts.
+3. Follow the prompts. Only USB or removable whole disks are accepted.
 
 ### Manual Method
 If you prefer to do it manually:
-1.  **Prepare USB:** Format a USB drive as **FAT32** (Scheme: GUID Partition Map / GPT).
-2.  **Copy Files:** Copy the **`EFI`** folder from the `BOOTEFIX64` folder in this repository to the **root** of the USB drive.
+1. **Prepare USB:** Format a USB drive as **FAT32** using a GUID Partition Map (GPT).
+2. **Copy Files:** Copy your complete, hardware-specific **`EFI`** folder to the **root** of the USB drive. The final path must be `USB/EFI/OC/config.plist`, not `USB/EFI/EFI/...`.
 3.  **Boot:**
     *   Insert USB into the broken Mac.
     *   Hold **Option (Alt)** while powering on.
     *   Select **"EFI Boot"** (OpenCore logo).
     *   Select your macOS disk to boot.
-4.  **Fix:** Once in macOS, run OpenCore Patcher and "Install to Disk" to fix the internal drive.
+4. **Fix:** Once in macOS, use the same OpenCore tool and configuration that created the working EFI to reinstall it to the internal disk.
 
 
 ## 2. Local Recovery (No USB, No Internet)
 
-**Requirements:** You must have the **OpenCore Legacy Patcher** app installed in your Applications folder on the broken Mac.
+**Requirements:** A complete EFI previously generated for this Mac must be accessible on an unlocked macOS volume or another mounted volume.
 
 1.  Boot into **macOS Recovery** (Hold `Cmd+R` or Power button).
 2.  Open **Terminal** (Utilities > Terminal).
@@ -92,13 +102,10 @@ If you prefer to do it manually:
     ```bash
     diskutil mount disk0s1
     ```
-6.  **Copy EFI from your Applications folder:**
+6. **Copy a previously generated EFI:** Mount the USB or volume containing your known-good EFI and copy that folder. Do not copy generic files from inside an application bundle; they may not include the configuration generated for this Mac.
     ```bash
-    # Navigate to the Patcher's resources
-    cd "/Volumes/Macintosh HD/Applications/OpenCore-Patcher.app/Contents/Resources"
-    
-    # Copy the EFI folder to your EFI partition
-    cp -R EFI /Volumes/EFI/
+    # Example only: replace RESCUE with the volume that contains your backup
+    cp -R "/Volumes/RESCUE/EFI" /Volumes/EFI/
     ```
 7.  **Clear NVRAM & Reboot:**
     It is critical to clear NVRAM so the firmware forgets the old broken boot entries.
@@ -111,66 +118,39 @@ If you prefer to do it manually:
     ```
 
 
-## 3. Internet Recovery (No USB, With Internet)
+## 3. Official OpenCore Package (Advanced)
 
-**Requirements:** Working Wi-Fi or Ethernet in Recovery Mode.
+**Requirements:** A known-good `config.plist`, the matching kexts, and enough OpenCore upgrade knowledge to keep every binary and configuration key compatible.
 
-1.  Boot into **macOS Recovery** and connect to Wi-Fi (top right corner).
-2.  Open **Terminal**.
-3.  **Mount EFI:**
-    ```bash
-    diskutil mount disk0s1
-    ```
-4.  **Download OpenCore:**
-    ```bash
-    cd /Volumes/EFI
-    # Download OpenCore (Example for v1.6.0 - check for latest version URL)
-    curl -L -O https://github.com/acidanthera/OpenCorePkg/releases/download/1.6.0/OpenCore-1.6.0-RELEASE.zip
-    unzip OpenCore-*.zip
-    ```
-5.  **Install:**
-    *   *Warning: This installs a generic config. Only use this if you know how to configure it or just need the .efi files.*
-    ```bash
-    cp -R X64/EFI /Volumes/EFI/
-    ```
-    *(See the [Detailed Guide](restoration-guide.md) for properly configuring `BOOTx64.efi`)*
-6.  **Clear NVRAM & Reboot:**
-    ```bash
-    nvram -c
-    shutdown -h now
-    ```
-    *Perform a cold boot (shutdown then power on).*
+The official OpenCorePkg release contains binaries and a sample plist, not a bootable configuration for your Mac. Do not copy its `X64/EFI` folder directly onto the target and expect it to boot. Download the exact release required by your existing configuration and follow the OpenCore upgrade documentation to update the complete binary/configuration set together. If you do not already have a working configuration, use a hardware-specific builder or guide before running these restore scripts.
 
 
-## 4. Internet Recovery (Using this Rescue Kit)
+## 4. Automated EFI Restore in Recovery
 
-**Requirements:** Working Wi-Fi or Ethernet in Recovery Mode.
+**Requirements:** macOS Recovery and a complete, known-good EFI folder accessible on a mounted USB or macOS volume. Internet access is needed only if the scripts are not already available locally.
 
-1.  Boot into **macOS Recovery** and connect to Wi-Fi.
-2.  Open **Terminal**.
-3.  **Mount EFI:**
-    ```bash
-    diskutil mount disk0s1
-    ```
-4.  **Download this Rescue Kit:**
+1. Boot into **macOS Recovery**, open **Terminal**, and connect to Wi-Fi if you need to download the scripts.
+2. Download this repository:
     ```bash
     cd /tmp
     curl -L -o opencore-restore.zip https://codeload.github.com/supermarsx/opencore-restore/zip/refs/heads/main
     unzip opencore-restore.zip
     ```
-5.  **Run the Automated Restore Script:**
-    We have included a script to automate the process (detects EFI, backs up old files, installs new ones, and clears NVRAM).
+3. Run the restore assistant:
     ```bash
     cd opencore-restore-main
-    chmod +x restore.sh
-    ./restore.sh
+    sh ./restore.sh
     ```
-    *Follow the on-screen prompts.*
+4. When prompted, enter or drag the path to your complete EFI folder. The assistant makes you select the EFI partition, stages and verifies the files before replacement, preserves the previous `BOOT` and `OC` folders, and makes NVRAM clearing and shutdown optional.
 
 
 ## 📚 Detailed Manual Guide
 
 For complex scenarios, troubleshooting, and detailed explanations of every command, please read our full **[Restoration Guide](restoration-guide.md)**.
+
+## Testing
+
+CI runs ShellCheck and `shfmt`, mocked success and failure-path integration tests for macOS, Linux, and restore workflows, and PowerShell tests under both Windows PowerShell 5.1 and current PowerShell. The tests verify device-replacement rejection, copy layout and integrity, low-space handling, staged restore, and rollback. Physical USB erasure is intentionally not performed by hosted CI.
 
 ## ⚠️ Disclaimer & No Warranty
 
